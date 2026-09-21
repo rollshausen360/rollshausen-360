@@ -20,7 +20,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;font-f
 <body><a id="overview-nav" href="index.html" aria-label="Zur Übersicht">← Zur Übersicht</a>
 <canvas id="gl"></canvas>
 <div id="label">Dachboden · 360°</div>
-<div id="help">Maus gedrückt halten und ziehen · Mausrad zum Zoomen</div>
+<div id="help">Maus/Finger ziehen zum Schwenken · Mausrad oder 2 Finger zum Zoomen</div>
 <script>
 const canvas=document.getElementById("gl");
 const gl=canvas.getContext("webgl",{antialias:true})||canvas.getContext("experimental-webgl");
@@ -78,9 +78,124 @@ canvas.addEventListener("mousedown",e=>{drag=true;lx=e.clientX;ly=e.clientY;canv
 addEventListener("mouseup",()=>{drag=false;canvas.classList.remove("drag")});
 addEventListener("mousemove",e=>{if(!drag)return;yaw-=(e.clientX-lx)*0.004;pitch+=(e.clientY-ly)*0.004;pitch=Math.max(-1.45,Math.min(1.45,pitch));lx=e.clientX;ly=e.clientY;draw()});
 canvas.addEventListener("wheel",e=>{e.preventDefault();fov+=e.deltaY*.001;fov=Math.max(.55,Math.min(2.25,fov));draw()},{passive:false});
-canvas.addEventListener("touchstart",e=>{if(e.touches.length==1){drag=true;lx=e.touches[0].clientX;ly=e.touches[0].clientY}},{passive:false});
-canvas.addEventListener("touchmove",e=>{if(!drag||e.touches.length!=1)return;e.preventDefault();let t=e.touches[0];yaw-=(t.clientX-lx)*.004;pitch+=(t.clientY-ly)*.004;pitch=Math.max(-1.45,Math.min(1.45,pitch));lx=t.clientX;ly=t.clientY;draw()},{passive:false});
-canvas.addEventListener("touchend",()=>drag=false);
+
+
+/* Tablet-/Smartphone-Bedienung: 1 Finger = Schwenken, 2 Finger = Zoom */
+canvas.style.touchAction="none";
+let touchMode=0, pinchStartDist=0, pinchStartFov=fov;
+function touchDist(t){
+  const dx=t[0].clientX-t[1].clientX, dy=t[0].clientY-t[1].clientY;
+  return Math.hypot(dx,dy);
+}
+canvas.addEventListener("touchstart",e=>{
+  e.preventDefault();
+  if(e.touches.length===1){
+    touchMode=1; drag=true;
+    lx=e.touches[0].clientX; ly=e.touches[0].clientY;
+    canvas.classList.add("drag");
+  }else if(e.touches.length>=2){
+    touchMode=2; drag=false;
+    pinchStartDist=touchDist(e.touches);
+    pinchStartFov=fov;
+    canvas.classList.remove("drag");
+  }
+},{passive:false});
+canvas.addEventListener("touchmove",e=>{
+  e.preventDefault();
+  if(e.touches.length===1 && touchMode===1){
+    const t=e.touches[0];
+    yaw-=(t.clientX-lx)*.004;
+    pitch+=(t.clientY-ly)*.004;
+    pitch=Math.max(-1.45,Math.min(1.45,pitch));
+    lx=t.clientX; ly=t.clientY;
+    draw();
+  }else if(e.touches.length>=2){
+    if(touchMode!==2){
+      touchMode=2;
+      pinchStartDist=touchDist(e.touches);
+      pinchStartFov=fov;
+    }
+    const d=touchDist(e.touches);
+    if(pinchStartDist>0){
+      fov=pinchStartFov*(pinchStartDist/d);
+      fov=Math.max(.55,Math.min(2.25,fov));
+      draw();
+    }
+  }
+},{passive:false});
+canvas.addEventListener("touchend",e=>{
+  e.preventDefault();
+  drag=false;
+  canvas.classList.remove("drag");
+  if(e.touches.length===1){
+    touchMode=1; drag=true;
+    lx=e.touches[0].clientX; ly=e.touches[0].clientY;
+  }else{
+    touchMode=0;
+  }
+},{passive:false});
+canvas.addEventListener("touchcancel",()=>{
+  drag=false; touchMode=0; canvas.classList.remove("drag");
+},{passive:false});
+
+/* Mobile-Steuerung V2: Pointer Events */
+canvas.style.touchAction="none";
+const activePointers=new Map();
+let pLastX=0,pLastY=0,pinchDist0=0,pinchFov0=0;
+
+function pointerDistance(){
+  const a=[...activePointers.values()];
+  if(a.length<2)return 0;
+  return Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y);
+}
+
+canvas.addEventListener("pointerdown",e=>{
+  if(e.pointerType==="mouse") return;  // Desktop bleibt bei der bewährten Maussteuerung
+  e.preventDefault();
+  try{canvas.setPointerCapture(e.pointerId)}catch(_){}
+  activePointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(activePointers.size===1){
+    pLastX=e.clientX; pLastY=e.clientY;
+  } else if(activePointers.size===2){
+    pinchDist0=pointerDistance();
+    pinchFov0=fov;
+  }
+},{passive:false});
+
+canvas.addEventListener("pointermove",e=>{
+  if(e.pointerType==="mouse" || !activePointers.has(e.pointerId)) return;
+  e.preventDefault();
+  const old=activePointers.get(e.pointerId);
+  activePointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+
+  if(activePointers.size===1){
+    yaw-=(e.clientX-pLastX)*.004;
+    pitch+=(e.clientY-pLastY)*.004;
+    pitch=Math.max(-1.45,Math.min(1.45,pitch));
+    pLastX=e.clientX; pLastY=e.clientY;
+    draw();
+  } else if(activePointers.size>=2){
+    const d=pointerDistance();
+    if(pinchDist0>0 && d>0){
+      fov=Math.max(.55,Math.min(2.25,pinchFov0*(pinchDist0/d)));
+      draw();
+    }
+  }
+},{passive:false});
+
+function pointerDone(e){
+  if(e.pointerType==="mouse") return;
+  activePointers.delete(e.pointerId);
+  if(activePointers.size===1){
+    const a=[...activePointers.values()][0];
+    pLastX=a.x; pLastY=a.y;
+  } else if(activePointers.size===0){
+    pinchDist0=0;
+  }
+}
+canvas.addEventListener("pointerup",pointerDone,{passive:false});
+canvas.addEventListener("pointercancel",pointerDone,{passive:false});
+/* Rollshausen Mobile V2 Referenz 2026-09-21 */
 addEventListener("resize",resize);
 </script>
 </body></html>
